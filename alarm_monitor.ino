@@ -15,6 +15,7 @@
 
 SSD1306  display(0x3c, 0, 2); // Initialise the OLED display using Wire library
 Adafruit_ADS1115 ads1115(0x48);  // construct an ads1115 at address 0x48
+Adafruit_ADS1115 ads1116(0x49);  // construct an ads1115 at address 0x4B
 ESP8266WebServer server(80); // Webserver, to watch the temperature from the web on the IP address
 
 float Voltage1 = 0.0;
@@ -24,9 +25,9 @@ float Zone[] = {0.0,0.0,0.0,0.0,0.0,0.0,0.0};
 
 
 String webPage = "";
-String zone1 = "kitchen door";
-String zone6 = "bathroom window";
-String result="";
+String zone1 = "low";
+String zone6 = "high";
+String result[]={"","","","","","",""};
 
 
 
@@ -48,6 +49,7 @@ void setup() {
 
   webPage += "<h1>ESP8266 Web Server</h1>";
   ads1115.begin();
+  ads1116.begin();
   
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -91,8 +93,11 @@ void setup() {
     char temp1Char[20] = "";
     char temp2Char[20] = "";
     dtostrf(Voltage1, 3, 1, temp1Char);
-    
-    server.send(200, "text/html", webPage + "<br>Zone 1: " + Zone[1] + " - " + result );
+    String bodyText =webPage;
+     for (int i=1; i <= 7; i++){
+      bodyText = bodyText + "<br>Zone " + i + " : " + Zone[i] + " - " + result[i];
+     }
+     server.send(200, "text/html", bodyText );
   });
   server.begin();
   Serial.println("HTTP server started");
@@ -114,32 +119,45 @@ void drawVoltage()
 {
     int16_t adc0;  // we read from the ADC, we have a sixteen bit integer as a result
     adc0 = ads1115.readADC_SingleEnded(0);  // Alarm system voltage
-
-    int16_t adcZone = ads1115.readADC_SingleEnded(1);
-    Zone[1] = (((float)100*adcZone)/adc0);  //adc0 represents the voltage of the alarm system, adc1 the first zone voltage. we want the percentage of the zone against the system.
-    if (ZonePrevValue[1]!=Zone[1]){
-      //TODO: send message to mqtt
-      ZonePrevValue[1]=Zone[1];
-    }
+    int16_t adcZone;
+    for (int i=1; i <= 7; i++){
+      if (i<4){
+        adcZone = ads1115.readADC_SingleEnded(i);
+      }else{
+        adcZone = ads1116.readADC_SingleEnded(i-4);
+      }
+      Zone[i] = (((float)100*adcZone)/adc0);  //adc0 represents the voltage of the alarm system, adc1 the first zone voltage. we want the percentage of the zone against the system.
+      if (ZonePrevValue[i]!=Zone[i]){
+        //TODO: send message to mqtt
+        ZonePrevValue[i]=Zone[i];
+      }
+    } 
+   
+    
     
 //Debug
     Voltage1 = (adc0 * 0.1875)/1000;
     char result1[20] = "";
     dtostrf(Voltage1, 3, 4, result1);
-    
+    adcZone = ads1116.readADC_SingleEnded(4);
     Voltage2 = (adcZone * 0.1875)/1000;
     char result2[20] = "";
     dtostrf(Voltage2, 3, 4, result2);
 
-    if (Zone[1]<47.75) 
-      result="all in rest";
-    else if (Zone[1]<60.1) 
-      result = zone6;
-    else if (Zone[1]<82.7) 
-      result = zone1;
-    else
-      result = zone1+"-"+zone6;
-    
+    for (int i=1; i <= 7; i++){
+        if (Zone[i]<10.00)
+          result[i]="Not connected";
+        else if (Zone[i]<47.75) 
+          result[i]="all in rest";
+        else if (Zone[i]<60.1) 
+          result[i] = zone6;
+        else if (Zone[i]<82.7) 
+          result[i] = zone1;
+        else if (Zone[i]==100.0)
+          result[i] = "ADC not connected";  //ADC not connected
+        else
+          result[i] = zone1+"-"+zone6;
+    }
     
     display.setTextAlignment(TEXT_ALIGN_LEFT);
     display.setFont(ArialMT_Plain_10);
@@ -150,7 +168,7 @@ void drawVoltage()
     dtostrf(Zone[1], 3, 1, tempChar);
     display.drawString(0, 20, tempChar);
     display.setFont(ArialMT_Plain_10);
-    display.drawString(0, 36, result);
+    display.drawString(0, 36, result[1]);
 
     
   
