@@ -22,7 +22,7 @@ float Voltage1 = 0.0;
 float Voltage2 = 0.0;
 float ZonePrevValue[] = {0.0,0.0,0.0,0.0,0.0,0.0,0.0};
 float Zone[] = {0.0,0.0,0.0,0.0,0.0,0.0,0.0};
-
+int counter=1;
 
 String webPage = "";
 String zone1 = "low";
@@ -132,8 +132,12 @@ void drawVoltage()
         ZonePrevValue[i]=Zone[i];
       }
     } 
-   
-    
+
+    adcZone = ads1116.readADC_SingleEnded(0);
+    ads1115.startComparator_SingleEnded(0, (1000-counter));
+    ads1116.startComparator_SingleEnded(0, counter++);
+    if (counter>1000) 
+      counter=1;    
     
 //Debug
     Voltage1 = (adc0 * 0.1875)/1000;
