@@ -1,22 +1,37 @@
-/*********
-  Rui Santos
-  Complete project details at http://randomnerdtutorials.com
-  Arduino IDE example: Examples > Arduino OTA > BasicOTA.ino
-*********/
-
+#include <DHT.h>
+#include <DHT_U.h>
+#include <PubSubClient.h>
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #include <ESP8266WebServer.h>
 #include <WiFiUdp.h>
+#include <PubSubClient.h>
 #include <ArduinoOTA.h>
 #include <Wire.h>  
 #include "SSD1306.h"
 #include <Adafruit_ADS1015.h>
 
+///I2C
 SSD1306  display(0x3c, 0, 2); // Initialise the OLED display using Wire library
 Adafruit_ADS1115 ads1115(0x48);  // construct an ads1115 at address 0x48
 Adafruit_ADS1115 ads1116(0x49);  // construct an ads1115 at address 0x4B
 ESP8266WebServer server(80); // Webserver, to watch the temperature from the web on the IP address
+
+// Replace with your network credentials
+const char* ssid = "hoving";
+const char* password = "groningen";
+const char* mqtt_server = "192.168.1.195";
+const char* clientID = "housewatchinator";
+const char* outTopic = "housewatchinator/temp";
+const char* inTopic = "housewatchinator"; 
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+// DHT Sensor
+#define DHTTYPE DHT11   // DHT 11
+const int DHTPin = 4;
+DHT dht(DHTPin, DHTTYPE);
 
 float Voltage1 = 0.0;
 float Voltage2 = 0.0;
@@ -28,14 +43,6 @@ String webPage = "";
 String zone1 = "low";
 String zone6 = "high";
 String result[]={"","","","","","",""};
-
-
-
-
-// Replace with your network credentials
-const char* ssid = "hoving";
-const char* password = "groningen";
-
 
 void setup() {
   Serial.begin(9600);
@@ -50,6 +57,7 @@ void setup() {
   webPage += "<h1>ESP8266 Web Server</h1>";
   ads1115.begin();
   ads1116.begin();
+  dht.begin();
   
   WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
@@ -63,6 +71,9 @@ void setup() {
     delay(500);
     ESP.restart();
   }
+
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback);
 
   ArduinoOTA.onStart([]() {
     Serial.println("Start");
@@ -87,20 +98,49 @@ void setup() {
   Serial.print("IP address: "); Serial.println(WiFi.localIP());
   drawIPAddress();
   
+      
   
   server.on("/", [](){
+
+    //Relays
+    int16_t adcVcc = ads1115.readADC_SingleEnded(0);
+    int16_t adcZone4 = ads1116.readADC_SingleEnded(0);
+    ads1115.startComparator_SingleEnded(0, adcVcc+500);
+    ads1116.startComparator_SingleEnded(0, adcZone4-500);
+    ads1115.getLastConversionResults();
+    ads1116.getLastConversionResults();
+  
+     float h = dht.readHumidity();
+    // Read temperature as Celsius (the default)
+    float t = dht.readTemperature();
+    Serial.print("Temperature = ");
+    Serial.println(t);
+    Serial.print("Humidity = ");
+    Serial.println(h);
+  
     //Show the temperatures on a web page
     char temp1Char[20] = "";
     char temp2Char[20] = "";
     dtostrf(Voltage1, 3, 1, temp1Char);
     String bodyText =webPage;
-     for (int i=1; i <= 7; i++){
+    bodyText = bodyText + "adcVcc:" + adcVcc + "<br>";
+    bodyText = bodyText + "adcZone4:" + adcZone4 + "<br>";
+    
+    for (int i=1; i <= 7; i++){
       bodyText = bodyText + "<br>Zone " + i + " : " + Zone[i] + " - " + result[i];
      }
+     bodyText = bodyText + "<br>Temperature = ";
+     bodyText = bodyText + t;
+     bodyText = bodyText + "<br>Humidity = ";
+     bodyText = bodyText + h;
+     
      server.send(200, "text/html", bodyText );
   });
   server.begin();
   Serial.println("HTTP server started");
+  client.setServer(mqtt_server, 1883);
+  client.setCallback(callback); 
+  
   
 }
 
@@ -112,12 +152,16 @@ void loop() {
    drawIPAddress();
    display.display();
    server.handleClient();
+   if (!client.connected()) {
+      reconnect();
+    }
+    client.loop();
+  
     delay(500);
 }
 
 void drawVoltage()
-{
-    int16_t adc0;  // we read from the ADC, we have a sixteen bit integer as a result
+{     int16_t adc0;  // we read from the ADC, we have a sixteen bit integer as a result
     adc0 = ads1115.readADC_SingleEnded(0);  // Alarm system voltage
     int16_t adcZone;
     for (int i=1; i <= 7; i++){
@@ -133,11 +177,7 @@ void drawVoltage()
       }
     } 
 
-    adcZone = ads1116.readADC_SingleEnded(0);
-    ads1115.startComparator_SingleEnded(0, (1000-counter));
-    ads1116.startComparator_SingleEnded(0, counter++);
-    if (counter>1000) 
-      counter=1;    
+    
     
 //Debug
     Voltage1 = (adc0 * 0.1875)/1000;
@@ -171,8 +211,8 @@ void drawVoltage()
     char tempChar[20] = "";
     dtostrf(Zone[1], 3, 1, tempChar);
     display.drawString(0, 20, tempChar);
-    display.setFont(ArialMT_Plain_10);
-    display.drawString(0, 36, result[1]);
+  //  display.setFont(ArialMT_Plain_10);
+  //  display.drawString(0, 36, result[1]);
 
     
   
@@ -189,19 +229,63 @@ void drawIPAddress()
 
 void drawBootText() 
 {
-    //display.setTextAlignment(TEXT_ALIGN_LEFT);
-    //display.setFont(ArialMT_Plain_10);
-   // display.drawString(0, 0, "------");
-  //  display.setFont(ArialMT_Plain_16);
-   // display.drawString(0, 10, "Booting");
-   // display.setFont(ArialMT_Plain_24);
-    //display.drawString(0, 26, "Hello Lucas & Leo");
- //   
     drawVoltage();
     display.setFont(ArialMT_Plain_10);
     display.drawString(30, 50, "Connecting");
 }
 
+void callback(char* topic, byte* payload, unsigned int length) {
+  // Conver the incoming byte array to a string
+  payload[length] = '\0'; // Null terminator used to terminate the char array
+  String message = (char*)payload;
+
+  Serial.print("Message arrived on topic: [");
+  Serial.print(topic);
+  Serial.print("], ");
+  Serial.println(message);
+  webPage = webPage + "Message arrived on topic: [";
+  webPage = webPage + topic;
+  webPage = webPage + "] " + message + "<br>";
+  display.setFont(ArialMT_Plain_10);
+  display.drawString(0, 36, topic + '\\' + message);
+  display.display();  
+  if(message == "temperature, c"){
+  
+  
+    client.publish(outTopic, "30 graden");
+  } else if (message == "humidity"){
+   
+   
+   
+    client.publish(outTopic, "20 percent");
+  }
+}
+
+void reconnect() {
+  // Loop until we're reconnected
+  while (!client.connected()) {
+    Serial.print("Attempting MQTT connection...");
+    webPage = webPage +"Attempting MQTT connection...<br>";
+    // Attempt to connect
+    if (client.connect(clientID)) {
+      Serial.println("connected");
+      webPage = webPage +"connected.<br>";
+      // Once connected, publish an announcement...
+      client.publish(outTopic, clientID);
+      // ... and resubscribe
+      client.subscribe(inTopic);
+    } else {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      webPage = webPage +"failed, rc=";
+      webPage = webPage + client.state();
+      webPage = webPage + " try again in 5 seconds<br>";
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
 
 
 
