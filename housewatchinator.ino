@@ -12,18 +12,24 @@
 #include <Adafruit_ADS1015.h>
 
 ///I2C
-SSD1306  display(0x3c, 0, 2); // Initialise the OLED display using Wire library
+SSD1306  display(0x3c, 0, 2); // Initialise the OLED display using Wire library (sda,scl)
 Adafruit_ADS1115 ads1115(0x48);  // construct an ads1115 at address 0x48
 Adafruit_ADS1115 ads1116(0x49);  // construct an ads1115 at address 0x4B
 ESP8266WebServer server(80); // Webserver, to watch the temperature from the web on the IP address
 
 // Replace with your network credentials
-const char* ssid = "hoving";
-const char* password = "groningen";
+
 const char* mqtt_server = "192.168.1.195";
 const char* clientID = "housewatchinator";
 const char* outTopic = "housewatchinator/temp";
+const char* stateTopic = "housewatchinator/state";
 const char* inTopic = "housewatchinator"; 
+char msg[50];
+char result1[20] = "";
+
+int lowerByte=0;
+int higherByte=0;
+  
 
 WiFiClient espClient;
 PubSubClient client(espClient);
@@ -54,7 +60,7 @@ void setup() {
   drawBootText(); 
   display.display();
 
-  webPage += "<h1>ESP8266 Web Server</h1>";
+  webPage += "<h1>Housewatchinator</h1>";
   ads1115.begin();
   ads1116.begin();
   dht.begin();
@@ -102,13 +108,8 @@ void setup() {
   
   server.on("/", [](){
 
-    //Relays
     int16_t adcVcc = ads1115.readADC_SingleEnded(0);
     int16_t adcZone4 = ads1116.readADC_SingleEnded(0);
-    ads1115.startComparator_SingleEnded(0, adcVcc+500);
-    ads1116.startComparator_SingleEnded(0, adcZone4-500);
-    ads1115.getLastConversionResults();
-    ads1116.getLastConversionResults();
   
      float h = dht.readHumidity();
     // Read temperature as Celsius (the default)
@@ -164,6 +165,7 @@ void drawVoltage()
 {     int16_t adc0;  // we read from the ADC, we have a sixteen bit integer as a result
     adc0 = ads1115.readADC_SingleEnded(0);  // Alarm system voltage
     int16_t adcZone;
+    boolean statusChange=false;
     for (int i=1; i <= 7; i++){
       if (i<4){
         adcZone = ads1115.readADC_SingleEnded(i);
@@ -172,36 +174,27 @@ void drawVoltage()
       }
       Zone[i] = (((float)100*adcZone)/adc0);  //adc0 represents the voltage of the alarm system, adc1 the first zone voltage. we want the percentage of the zone against the system.
       if (ZonePrevValue[i]!=Zone[i]){
-        //TODO: send message to mqtt
+        statusChange=true;
         ZonePrevValue[i]=Zone[i];
       }
     } 
+    
+    if(statusChange){//send message to mqtt
+      publishState();
+    }
 
     
     
 //Debug
     Voltage1 = (adc0 * 0.1875)/1000;
-    char result1[20] = "";
+    
     dtostrf(Voltage1, 3, 4, result1);
     adcZone = ads1116.readADC_SingleEnded(4);
     Voltage2 = (adcZone * 0.1875)/1000;
     char result2[20] = "";
     dtostrf(Voltage2, 3, 4, result2);
 
-    for (int i=1; i <= 7; i++){
-        if (Zone[i]<10.00)
-          result[i]="Not connected";
-        else if (Zone[i]<47.75) 
-          result[i]="all in rest";
-        else if (Zone[i]<60.1) 
-          result[i] = zone6;
-        else if (Zone[i]<82.7) 
-          result[i] = zone1;
-        else if (Zone[i]==100.0)
-          result[i] = "ADC not connected";  //ADC not connected
-        else
-          result[i] = zone1+"-"+zone6;
-    }
+  
     
     display.setTextAlignment(TEXT_ALIGN_LEFT);
     display.setFont(ArialMT_Plain_10);
@@ -216,6 +209,37 @@ void drawVoltage()
 
     
   
+}
+
+void publishState()
+{
+  int prevLowerByte=lowerByte;
+  int prevHigherByte=higherByte;
+  lowerByte=0;
+  higherByte=0;
+  for (int i=1; i <= 7; i++){
+    if (Zone[i]<10.00){
+      result[i]="Not connected";
+    }else if (Zone[i]<47.75) {
+      result[i]="all in rest";
+    }else if (Zone[i]<60.1){ 
+      result[i] = zone6;
+      higherByte = higherByte + 2^i;
+    }else if (Zone[i]<82.7) {
+      result[i] = zone1;
+      lowerByte = lowerByte + 2^i;
+    }else if (Zone[i]==100.0){
+      result[i] = "ADC not connected";  //ADC not connected
+    }else{
+      result[i] = zone1+"-"+zone6;
+      lowerByte = lowerByte + 2^i;
+      higherByte = higherByte + 2^i;
+    }
+  }
+  snprintf (msg, 50, "%d %d", higherByte, lowerByte);
+  if (prevLowerByte!=lowerByte || prevHigherByte !=higherByte){
+    client.publish(stateTopic, msg);
+  }
 }
 
 void drawIPAddress() 
@@ -258,6 +282,18 @@ void callback(char* topic, byte* payload, unsigned int length) {
    
    
     client.publish(outTopic, "20 percent");
+  }  else if (message == "state?"){
+    lowerByte=-1;
+    publishState();
+  } else if (message == "arm"){
+     //Relays
+    int16_t adcVcc = ads1115.readADC_SingleEnded(0);
+    int16_t adcZone4 = ads1116.readADC_SingleEnded(0);
+    ads1115.startComparator_SingleEnded(0, adcVcc+500);
+    ads1116.startComparator_SingleEnded(0, adcZone4-500);
+    ads1115.getLastConversionResults();
+    ads1116.getLastConversionResults();
+    delay(1000);
   }
 }
 
@@ -286,6 +322,15 @@ void reconnect() {
     }
   }
 }
+
+
+
+
+
+
+
+
+
 
 
 
