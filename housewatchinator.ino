@@ -18,7 +18,8 @@ Adafruit_ADS1115 ads1116(0x49);  // construct an ads1115 at address 0x4B
 ESP8266WebServer server(80); // Webserver, to watch the temperature from the web on the IP address
 
 // Replace with your network credentials
-
+const char* ssid = "";
+const char* password = "";
 const char* mqtt_server = "192.168.1.195";
 const char* clientID = "housewatchinator";
 const char* outTopic = "housewatchinator/temp";
